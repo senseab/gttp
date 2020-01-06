@@ -28,18 +28,18 @@ const (
 	envHTTPPath          = gttpPrefix + "HTTPPath"
 	envSPAEnabled        = gttpPrefix + "SPA_ENABLED" // 1 or 0
 	envIndex             = gttpPrefix + "INDEX"
-	envSPAStaticDirs     = gttpPrefix + "SPA_STATIC_DIR" // comma seprated.
+	envSPAStaticPaths    = gttpPrefix + "SPA_STATIC_PATHS" // comma seprated.
 )
 
 var (
-	bindIP           string
-	bindPort         int
-	workDirectory    string
-	httpPath         string
-	spaEnabled       bool
-	index            string
-	spaStaticDir     string
-	spaStaticDirList []string
+	bindIP            string
+	bindPort          int
+	workDirectory     string
+	httpPath          string
+	spaEnabled        bool
+	index             string
+	spaStaticPath     string
+	spaStaticPathList []string
 )
 
 func init() {
@@ -51,16 +51,16 @@ func init() {
 	flag.StringVar(&workDirectory, "workdir", defaultWorkDirectory, "Specifiy dir contains html files.")
 	flag.BoolVar(&spaEnabled, "use-spa", false, "Use single page appliction.")
 	flag.StringVar(&index, "index", defaultIndex, "Set index file.")
-	flag.StringVar(&spaStaticDir, "spa-static-dir", "", "Which directories should be loaded globally. comma seprated.")
+	flag.StringVar(&spaStaticPath, "spa-static-path", "", "Which directories should be loaded globally. comma seprated.")
 	flag.Parse()
 	if !strings.HasPrefix(httpPath, "/") {
 		log.Fatalln("Argument http-path should start with slash! current", httpPath)
 	}
-	if spaEnabled && spaStaticDir != "" {
-		spaStaticDirList = strings.Split(spaStaticDir, ",")
-		for _, url := range spaStaticDirList {
+	if spaEnabled && spaStaticPath != "" {
+		spaStaticPathList = strings.Split(spaStaticPath, ",")
+		for _, url := range spaStaticPathList {
 			if !strings.HasPrefix(url, "/") {
-				log.Fatalln("Static dirs should start with slash! current", url)
+				log.Fatalln("Static paths should start with slash! current", url)
 			}
 		}
 	}
@@ -81,7 +81,6 @@ func main() {
 	}
 	serveAt := fmt.Sprintf("%s:%d", bindIP, bindPort)
 	log.Println("Will listen at:", serveAt)
-
 	http.HandleFunc(httpPath, httpHandler)
 	err = http.ListenAndServe(serveAt, nil)
 	if err != nil {
@@ -90,21 +89,27 @@ func main() {
 }
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
-	const regexpFormat = "^.+/(%s/.*)$"
+	const regexpFormat = "^.+(%s.*)$"
 	var (
-		status  = http.StatusOK
-		urlPath = r.URL.Path
-		_buf    []byte
-		buffer  = bytes.NewBuffer(_buf)
+		status    = http.StatusOK
+		urlPath   = r.URL.Path
+		_buf      []byte
+		buffer    = bytes.NewBuffer(_buf)
+		forwarded = false
 	)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		w.WriteHeader(status)
+		buffer.WriteTo(w)
+		return
+	}
 	if urlPath == httpPath {
 		urlPath = index
 	}
-	defer buffer.WriteTo(w)
-	defer w.WriteHeader(status)
+
 	if spaEnabled {
-		for _, staticDir := range spaStaticDirList {
-			if reg, err := regexp.Compile(fmt.Sprintf(regexpFormat, staticDir)); err != nil {
+		for _, staticPath := range spaStaticPathList {
+			if reg, err := regexp.Compile(fmt.Sprintf(regexpFormat, staticPath)); err != nil {
 				log.Println("Construct regexp failed,", err)
 				continue
 			} else if reg.MatchString(urlPath) {
@@ -117,7 +122,8 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case os.IsNotExist(err):
 			if spaEnabled {
-				http.Redirect(w, r, httpPath, http.StatusPermanentRedirect)
+				http.ServeFile(w, r, path.Join(workDirectory, index))
+				forwarded = true
 			} else {
 				status = http.StatusNotFound
 			}
@@ -127,9 +133,14 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 			log.Println("Error:", err)
 		}
-		return
 	}
-	defer f.Close()
-	log.Println("Access", r.RemoteAddr, r.Method, r.URL.Path, status, "\""+r.UserAgent()+"\"", r.Header.Get("X-Forwarded-For"))
-	buffer.ReadFrom(f)
+	if f != nil {
+		defer f.Close()
+		buffer.ReadFrom(f)
+	}
+	log.Println("Access", r.RemoteAddr, r.Method, urlPath, status, "\""+r.UserAgent()+"\"", r.Referer(), r.Header.Get("X-Forwarded-For"))
+	if !forwarded {
+		defer buffer.WriteTo(w)
+		defer w.WriteHeader(status)
+	}
 }
