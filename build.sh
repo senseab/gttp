@@ -6,4 +6,5 @@ go build -ldflags "-w -s"
 upx -9 gttp
 docker build -t $IMAGE:$TAG .
 docker tag $IMAGE:$TAG $IMAGE:latest
-docker push $IMAGE:$TAG $IMAGE:latest
+docker push $IMAGE:$TAG 
+docker push $IMAGE:latest
